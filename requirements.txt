@@ -1,11 +1,29 @@
-numpy==1.21.2
-scipy
-scikit-learn==0.24.1
-matplotlib==3.4.1
-pandas==1.1.4
-fast-histogram==0.10
-KDEpy==1.1.0
-tqdm==4.53.0
-colorcet==2.0.6
-h5py==3.1.0
-tables==3.6.1
+# Python 3.10 environment used by the numbered experiments.
+# torch/torchvision are kept at a tested compatible pair. On clusters that
+# require a site-specific CUDA wheel, install that pair first, then install
+# this file with: pip install -r requirements.txt
+torch==2.5.1
+torchvision==0.20.1
+
+numpy>=1.26,<2
+scipy>=1.11,<1.16
+scikit-learn>=1.3,<1.8
+pandas>=2,<3
+Pillow>=10,<13
+h5py>=3.10,<4
+tables>=3.9,<4
+
+# Original notebook/plotting utilities.
+matplotlib>=3.8,<4
+fast-histogram>=0.14,<1
+KDEpy>=1.1,<2
+tqdm>=4.66,<5
+colorcet>=3,<4
+
+# Checkpoint preparation and the pinned LeJEPA implementation.
+huggingface-hub>=0.25,<1
+safetensors>=0.4,<1
+loguru>=0.7,<1
+
+# Reproducibility checks.
+pytest>=8,<10

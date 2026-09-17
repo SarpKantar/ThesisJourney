@@ -1,0 +1,602 @@
+# CNN Filter DB: Four-Experiment Research Handoff
+
+Generated from the repository artifacts on 2026-09-16. This is a plain-text Markdown document with a `.mf` extension so it can be pasted into a new chat as research context.
+
+## Purpose and scope
+
+This repository contains four local experiment families about how learned `3x3` CNN-filter distributions differ across training routes. The primary scientific object is the convolutional backbone, not classification accuracy by itself.
+
+The four local experiments are:
+
+1. RN50/MLL23 three-route filter comparison.
+2. RN50 LeJEPA-minus-ImageNet signed-residual analysis.
+3. RN18/CIFAR10 closest-available-accuracy ImageNet fine-tuning versus corrected LeJEPA.
+4. RN18 robustness and dynamics: threshold sensitivity, a full CNN Filter DB PCA basis, and LeJEPA training trajectories.
+
+`(1)OriginalPaperExperiments(notOurs).md` describes the source paper and is **not** one of the four local experiments. Experiment 2 is a follow-up analysis of Experiment 1 rather than a new training run. Much of Experiment 4 is also analysis-only and reuses Experiment 3 checkpoints.
+
+Repository paths were renamed after some runs. Paths embedded inside old JSON/Markdown artifacts may omit prefixes such as `(3rdEXP)(theONE)`. Prefer the current paths stated in this handoff.
+
+## Executive summary
+
+| Experiment | Main question | Main configuration | Highlighted result |
+|---|---|---|---|
+| 1 | Do scratch, ImageNet-pretrained, and LeJEPA RN50 backbones learn different `3x3` filter populations on MLL23? | Three final RN50 checkpoints; 16 bottleneck `conv2` tensors; PCA fitted to all three models | ImageNet FT and LeJEPA were closest (`D=0.045309`); the scratch model was much farther from ImageNet (`0.482610`) and LeJEPA (`0.314835`). |
+| 2 | Where and in which PCA directions do the close RN50 ImageNet and LeJEPA distributions differ? | Same two RN50s and Experiment 1 PCA; signed residual `LeJEPA - ImageNet` | The residual was structured by depth and dominated after weighting by `c0` (`weighted TV=0.025807`, mean shift `+0.033900`). |
+| 3 | Does the LeJEPA-versus-ImageNet pattern remain when architecture/data change and accuracy is more closely matched? | RN18/CIFAR10; ImageNet FT epoch 1 (`91.25%`) versus corrected LeJEPA epoch 110 frozen probe (`89.13%`) | No-stem local-PCA drift was `0.128806`; the largest layer difference was `layer4.1.conv2` (`0.779819`). Raw scale was strongly confounded by BatchNorm. |
+| 4 | Are the RN18 findings robust to thresholds and an external PCA basis, and when does LeJEPA filter organization emerge? | Same RN18 pair; full-database PCA from 1,464,797,156 filters; 13 LeJEPA checkpoints | Pair drift remained similar in the external basis (`0.133022`, only `+3.27%`). Most global LeJEPA filter reorganization occurred by epochs 20-30, while probe accuracy kept improving. |
+
+Dependency map:
+
+```text
+RN50 checkpoints -> Experiment 1 local PCA/drift -> Experiment 2 signed residuals
+
+CIFAR10 + RN18 training -> Experiment 3 canonical checkpoints/local PCA
+                                      |
+full CNN Filter DB -> global PCA -----+-> Experiment 4 robustness/dynamics
+```
+
+## Shared analysis language
+
+### Filter extraction and normalization
+
+- A convolution tensor is separated into one `3x3` kernel for every output-channel/input-channel pair and reshaped to rows in `R^9`.
+- Paper-style shape analysis divides each kernel by its own maximum absolute coefficient. Zero kernels are left unchanged. This removes kernel magnitude but retains relative spatial shape.
+- RN50 experiments use only the 16 bottleneck `layer*.conv2.weight` tensors. The `7x7` stem and all `1x1` convolutions are excluded.
+- RN18 paper-aligned PCA results use the 16 residual-block `3x3` convolutions and exclude the special CIFAR stem. The separate scalar kernel-distribution report includes the CIFAR `3x3` stem and labels it explicitly.
+
+### PCA histogram drift
+
+For shared PCA component `i`, let `P_i` and `Q_i` be normalized coefficient histograms and `w_i` the PCA explained-variance ratio:
+
+```text
+D(P,Q) = sum_i w_i * [KL(P_i || Q_i) + KL(Q_i || P_i)]
+```
+
+- Most runs use 70 histogram bins.
+- `D` is symmetric and non-negative, but it is not bounded and is not an accuracy percentage.
+- A lower value means closer filter-coefficient distributions under that exact PCA/binning protocol.
+- Do **not** compare absolute `D` values across experiments unless PCA preprocessing, basis, scope, histogram edges, and bin count are identical.
+- PCA component signs are arbitrary. Component numbers can also rotate or swap when the PCA population changes. Total/stage/layer drift is safer to interpret than a universal semantic label for `c2`, `c3`, etc.
+- Independently trained channels can be permuted without changing the represented function. These are distribution-level comparisons, not semantic kernel-to-kernel matches by channel index.
+
+### Signed residual metrics
+
+- Residual direction is always stated explicitly. In Experiment 2 it is `LeJEPA - ImageNet`.
+- Total variation (TV) is half the absolute histogram residual mass.
+- Weighted TV is `TV * PCA explained-variance ratio`.
+- Mean delta is the difference between mean PCA coefficients. It is directional but does not capture distribution-shape changes with an unchanged mean.
+
+### Local entropy and sparsity
+
+For a raw layer matrix, covariance/SVD variance ratios are `p_i`:
+
+```text
+H = -sum_i p_i * log10(p_i)
+TH(n) = 1.26 / (1 + exp[-0.89 * (log2(n) - 2.30)]) - 0.31
+```
+
+- The maximum possible nine-direction entropy is `log10(9) ~= 0.95424`.
+- High `H` means variance is spread relatively evenly; very high `H/TH` can look random-like. Low `H` means variance is concentrated in fewer directions. Neither is automatically good or bad.
+- For sparsity epsilon `e`, the absolute layer threshold is `e * max(abs(layer weights))`. A kernel is sparse only when **all nine** coefficients are below this threshold.
+- The legacy setting is `e=0.01`. Entropy and sparsity use raw local layer weights and do not depend on the PCA basis.
+
+### Representation controls
+
+RN18 analyses distinguish:
+
+1. raw stored convolution weights;
+2. BatchNorm-folded effective weights, scaled per output channel by `gamma / sqrt(running_var + eps)`;
+3. per-kernel max-absolute-normalized shapes.
+
+Raw Conv weights alone are not functionally identifiable because BatchNorm can compensate for their scale.
+This warning also applies to the RN50 raw magnitude/quality fields in Experiments 1-2; those analyses did not BN-fold the weights.
+
+---
+
+## Experiment 1: RN50/MLL23 three-model filter analysis
+
+### Question
+
+How different are the learned `3x3` filter distributions of three RN50 backbones associated with the same target dataset but different training routes, and where through depth do they differ?
+
+### Configuration
+
+| Item | Value |
+|---|---|
+| Architecture | ResNet-50 |
+| Target dataset metadata | `mll23` for all three checkpoints |
+| Models | training from random initialization on MLL23; ImageNet-pretrained target fine-tuning; LeJEPA SSL backbone with target logistic-regression head |
+| Stored performance | balanced accuracy `0.5679`, `0.7244`, and `0.8377`, respectively |
+| Training epochs recorded | 100 for scratch and ImageNet FT; unavailable in the LeJEPA checkpoint |
+| Analyzed tensors | 16 RN50 bottleneck `conv2` `3x3` tensors |
+| Filters | 1,257,472 per model; 3,772,416 in the PCA fit |
+| PCA | full 9-component PCA fitted to the union of all three max-abs-normalized model populations |
+| Drift | 70-bin explained-variance-weighted symmetric KL; global, stage, layer, and component levels |
+| Analysis seed | 13 |
+| Resampling | 30 repeated without-replacement subsamples of 100,000 filters/model, described in reports as bootstrap |
+| Local quality | raw-layer `H`, `H/TH`, and `S` with legacy epsilon `0.01` |
+
+The training itself was not run by this repository experiment; it analyzes supplied final checkpoints. Exact training seed, LeJEPA pretraining corpus/configuration, and complete optimizer histories are not available from the three checkpoint files.
+
+For this executed RN50 implementation, KL uses natural logarithms; the two KL directions are summed, not averaged; empty bins receive `float32` epsilon; and one scalar histogram range spanning all nine components is recomputed for each global/stage/layer scope.
+
+### Inputs
+
+```text
+models/rn50_rand_ft_backbone.pth
+models/rn50_imagenet_ft_backbone.pth
+models/rn50_lejepa_ssl_backbone.pth
+scripts/analyze_rn50_filters.py
+jobs/analyze_rn50_filters.sbatch
+```
+
+### Main outputs
+
+Canonical directory: `outputs/(1stEXP)rn50_filter_analysis/`
+
+- `pca_target_rn50.npz`: local shared PCA.
+- `drift_global_pairs.csv`, `drift_stage_target_basis.csv`, `drift_layer_target_basis.csv`, and `drift_component_contributions.csv`.
+- `local_layer_quality.csv`.
+- `bootstrap_global_samples.csv` and `bootstrap_global_confidence_intervals.csv`.
+- `figures/`: eigenfilters, global/stage heatmaps, depth curves, ridge plots, and `c0/c1` density plots.
+- `summary.md` and `report_first_experiments.md`.
+
+### Observed results
+
+Global drift:
+
+| Pair | Full-population `D` | Repeated-subsample mean | 2.5%-97.5% interval |
+|---|---:|---:|---:|
+| Scratch FT vs ImageNet FT | 0.482610 | 0.517790 | [0.489416, 0.558711] |
+| Scratch FT vs LeJEPA SSL | 0.314835 | 0.330863 | [0.317124, 0.348994] |
+| ImageNet FT vs LeJEPA SSL | 0.045309 | 0.046912 | [0.045302, 0.048667] |
+
+Stage drift:
+
+| Stage | Scratch-ImageNet | Scratch-LeJEPA | ImageNet-LeJEPA |
+|---|---:|---:|---:|
+| layer1 | 0.463530 | 0.370777 | 0.098411 |
+| layer2 | 0.202069 | 0.150844 | 0.044963 |
+| layer3 | 0.312139 | 0.370369 | 0.037942 |
+| layer4 | 0.631929 | 0.322673 | 0.080797 |
+
+- `layer1.0.conv2.weight` was the highest-drift layer for all three pairs: `1.2534` scratch-ImageNet, `0.6375` scratch-LeJEPA, and `0.2233` ImageNet-LeJEPA.
+- `c0` contributed `72.1%` of scratch-ImageNet drift, `72.9%` of scratch-LeJEPA drift, and `34.6%` of the much smaller ImageNet-LeJEPA drift.
+- Unweighted mean entropy over the 16 layers: scratch `0.9346`, ImageNet `0.7210`, LeJEPA `0.7258`. Fourteen of 16 scratch layers met the paper-derived `H/TH > 0.95` near-random heuristic; no empirical random RN50 control was included.
+- Unweighted mean/max sparsity over the 16 layers at epsilon `0.01`: scratch `0.0000/0.0000`; ImageNet `0.0324/0.5024`; LeJEPA `0.0632/0.2641`.
+- ImageNet's sparsity was concentrated in `layer1.0.conv2` (`S=0.5024`), while LeJEPA had substantial late-layer sparsity (`layer4.0/1/2`: `0.2641/0.2181/0.1785`).
+
+### Defensible interpretation
+
+Within these supplied checkpoints, the two pretrained/representation-learning routes occupy a very similar broad RN50 `3x3` filter space; the scratch checkpoint is farther from both and has many layers meeting the paper-derived near-random entropy heuristic. The small ImageNet-LeJEPA global difference still has depth structure. This does **not** establish that the scratch filters are actually random, that LeJEPA is universally closer to ImageNet than scratch training, or that entropy/sparsity caused the performance ranking.
+
+### Limitations that matter for a next experiment
+
+- The performance gap is large, especially ImageNet `0.7244` versus LeJEPA `0.8377`; filter differences are not performance-matched.
+- Stored balanced accuracies were read from checkpoint metadata, not recomputed. The LeJEPA value comes from a logistic-regression head, and the repository does not establish whether its backbone was target-fine-tuned or frozen.
+- Training provenance and independent seeds are unavailable. Three checkpoints are not method-level replication.
+- The reported interval repeatedly samples correlated filters without replacement while keeping PCA and histogram edges fixed; it is a numerical stability band, not a formal bootstrap or seed/model-level confidence interval. The full scratch-ImageNet value (`0.482610`) is below the subsample 2.5% quantile (`0.489416`), illustrating sampling/histogram bias.
+- PCA is fitted to the compared models themselves, not an external population.
+- The pooled result is dominated by wide late layers. Stage/layer plots must accompany the global number.
+- There was no untrained RN50 control and no activation/functional analysis.
+- Planned CNN Filter DB reference comparisons in `(2)1stExperimentImplementation.md` were not part of the completed Experiment 1 artifacts.
+- The current analysis script was modified after completed job `1330456`, and exact package versions were not logged; saved CSVs and the completed job log are the strongest record of the executed run.
+
+---
+
+## Experiment 2: RN50 LeJEPA-minus-ImageNet signed residuals
+
+### Question
+
+Experiment 1 showed that RN50 ImageNet FT and LeJEPA are globally close. Experiment 2 asks where the remaining difference occurs, in which shared PCA directions, and with what sign.
+
+### Configuration
+
+- No models were trained.
+- Inputs are the Experiment 1 ImageNet and LeJEPA RN50 checkpoints plus `pca_target_rn50.npz`.
+- Scope remains the same 16 RN50 bottleneck `3x3` layers and 1,257,472 filters/model.
+- Each filter is max-abs normalized and projected into the unchanged Experiment 1 PCA basis.
+- Signed residual is `LeJEPA SSL - ImageNet FT`.
+- 70-bin residual histograms are summarized globally, by stage, and by layer/component with TV, weighted TV, mean delta, and symmetric KL.
+- All numeric summaries use full filter populations. Seed 13 and the 600,000-point/model cap affect the `c0/c1` density visualization; only one histogram figure is restricted to the top eight layer/components.
+- The official `D` and `global_component_kl_contributions.csv` use one scalar histogram range shared by all components. TV and the auxiliary KL fields in `global_component_residual_summary.csv` use separate component-specific ranges; their KL sum (`0.0454311`) must not be substituted for official `D=0.045309230360`.
+
+### Inputs
+
+```text
+models/rn50_imagenet_ft_backbone.pth
+models/rn50_lejepa_ssl_backbone.pth
+outputs/(1stEXP)rn50_filter_analysis/pca_target_rn50.npz
+scripts/analyze_lejepa_imagenet_residuals.py
+jobs/analyze_lejepa_imagenet_residuals.sbatch
+```
+
+### Main outputs
+
+Canonical directory: `outputs/(2ndEXP)rn50_lejepa_imagenet_residuals/`
+
+- Global/stage/layer residual summaries and histogram CSVs.
+- `global_component_kl_contributions.csv`, `pair_drift.csv`, and `layer_residual_drift.csv`.
+- `layer_quality_residuals.csv`.
+- Fourteen figures covering component residuals, stage/layer heatmaps, signed shifts, density, and quality deltas.
+- `summary.md`.
+
+### Observed results
+
+- The official pair drift was `0.045309230360`; Experiment 1 stored `0.045309014780`. They agree to six decimals but are not bit-identical.
+- The largest global residual after PCA weighting was `c0`: TV `0.066379`, weighted TV `0.025807`, mean delta `+0.033900`.
+- `c0` carried `34.73%` of summed global weighted TV and `40.41%` of summed layer/component weighted TV. `c3` actually had the largest unweighted global TV (`0.168572`), so `c0` is dominant only after explained-variance weighting. Weighted symmetric-KL contributions were led by `c0=0.015698`, then `c3=0.012653` and `c2=0.007675`.
+- Stage-level `c0` mean deltas were positive in layer1 (`+0.065772`) and layer4 (`+0.061829`), near zero in layer2 (`-0.000248`), and negative in layer3 (`-0.017263`).
+- Strong layer/component residuals included `layer3.3.conv2/c0`, `layer3.2.conv2/c0`, `layer4.0.conv2/c0`, and `layer2.0.conv2/c0`.
+- The unweighted arithmetic mean over 16 layers gave a LeJEPA-minus-ImageNet entropy delta of `+0.004790` and sparsity delta of `+0.030818`; these are layer-balanced, not filter-count-weighted, and the signs varied strongly with depth.
+- ImageNet was much sparser at the first bottleneck (`layer1.0`: delta `-0.361328` for LeJEPA minus ImageNet), whereas LeJEPA was much sparser in layer4 (`+0.263958`, `+0.218105`, `+0.178455` across its three blocks).
+
+### Defensible interpretation
+
+Under this stored local PCA basis and single checkpoint pair, the distributions are globally close and the observed LeJEPA-minus-ImageNet residual is depth-structured. The residual changes sign by depth, so it is not a single uniform offset.
+
+### Limitations
+
+Experiment 2 inherits Experiment 1's unmatched performance, checkpoint-provenance, local-PCA, layer-width, raw/BN-scale, and lack-of-seed-replication limitations. It adds no residual bootstrap and no bin-count sensitivity. A PCA sign can flip without changing the underlying result, so signed component statements are valid only with the saved basis. The script/job defaults still use pre-rename directories; a rerun must explicitly target the current `(1stEXP)` source and `(2ndEXP)` output paths.
+
+---
+
+## Experiment 3: RN18/CIFAR10 closest-available-accuracy comparison
+
+### Question
+
+When architecture and dataset change, and two checkpoints are chosen to have much closer classification accuracy, how do supervised ImageNet transfer and true LeJEPA SSL differ in residual-block filter distributions?
+
+### Correct implementation history
+
+- An initial fake-data run was only a smoke test and is not scientific evidence.
+- An early real-data SSL implementation used an EMA target encoder, predictor, stop-gradient, and cosine target-prediction objective. After checking the supplied paper/repository, it was recognized as **not LeJEPA**. Those SSL checkpoints must never be used or described as LeJEPA.
+- The ImageNet-supervised checkpoints from that earlier run were valid and reused.
+- Corrected LeJEPA uses view-center prediction/invariance plus SIGReg with the local Epps-Pulley/slicing implementation. It has no EMA target encoder, target projector, predictor, stop-gradient, prototypes, or SSL labels.
+
+### Data and shared architecture
+
+| Item | Value |
+|---|---|
+| Dataset | Real CIFAR10: 50,000 train and 10,000 test images |
+| Architecture | torchvision ResNet18 |
+| CIFAR adaptation | `3x3`, stride-1 stem; ImageNet weights are center-cropped from the `7x7` stem; max-pool replaced by identity |
+| Seed | 13 |
+| Method A | ImageNet1K_V1 initialization; all layers supervised-fine-tuned on labeled CIFAR10 |
+| Method B | Randomly initialized RN18; LeJEPA SSL on unlabeled CIFAR10; frozen-backbone probe for evaluation |
+
+### Method A: supervised ImageNet transfer
+
+- 20 epochs, batch 128, SGD with Nesterov, learning rate `0.01`, momentum `0.9`, weight decay `5e-4`, cosine annealing over 20 epochs, AMP.
+- Standard CIFAR train augmentation: random crop with padding 4 plus horizontal flip; CIFAR10 normalization.
+- A checkpoint was saved every epoch.
+- Best test accuracy was `0.9595` at epoch 19; epoch 20 was `0.9591`; the lowest saved accuracy was epoch 1 at `0.9125`.
+
+### Method B: canonical corrected LeJEPA (`p64 strong`)
+
+| Item | Value |
+|---|---|
+| SSL epochs/checkpoints | 120; save epoch 1 and every 10 epochs (13 total) |
+| Batch/precision | 256; CUDA AMP with bfloat16 |
+| Views | 4; for ResNet all 4 are global views |
+| Objective | `(1-lambda)*view-center prediction + lambda*SIGReg`, `lambda=0.02` |
+| SIGReg | 1,024 slices, `t_max=3.0`, 17 integration points |
+| Projector | `512 -> 2048 -> 2048 -> 64`, with BatchNorm/GELU hidden blocks |
+| SSL optimizer | AdamW, learning rate `0.002`, weight decay `5e-4` |
+| SSL schedule | 1-epoch warmup, then cosine decay to a `0.001` learning-rate factor |
+| Strong augmentation | random-resized crop scale `[0.08,1.0]`; color jitter `(0.8,0.8,0.8,0.2)` applied at p=0.8; grayscale p=0.2; blur p=0.5; solarize p=0.2; horizontal flip |
+| Final probe | frozen backbone; LayerNorm+Linear head; AdamW lr `0.001`, wd `1e-6`; 50 epochs with cosine schedule |
+| Monitoring probe | 5 epochs at saved checkpoints; not used as the final reported evaluation |
+
+The canonical configuration file is `outputs/(3rdEXP)(theONE)rn18_cifar10_true_lejepa_cfg_l02_v4_p64_strong/config.json`.
+Canonical SSL early stopping was effectively disabled with `ssl_min_checkpoints=999`. Final probes used batch 256 and the same standard labeled CIFAR random-crop/horizontal-flip training transform as Method A.
+
+Other corrected runs were informative but are not the canonical comparison:
+
+| Run | Main difference | Best fixed-probe final test accuracy |
+|---|---|---:|
+| Baseline | 250 epochs, V=8, lambda 0.05, projector 256/hidden 1024, moderate augmentation, SSL lr `5e-4`, 20-epoch SGD probe | 0.8605 at SSL epoch 110 |
+| Baseline post-hoc probe | LayerNorm+Linear, AdamW, 100 epochs | 0.8580 at SSL epoch 190 |
+| Strong p16 | canonical strong recipe but projector output 16 | 0.8873 at epoch 120 |
+| Strong p64 | canonical run | **0.8913 at epoch 110** |
+
+Two additional jobs failed during CUDA initialization and produced no scientific result: moderate V8 p64 and strong lambda-0.05 p64. They are untested, not negative outcomes.
+
+### Closest-accuracy selection
+
+- Every saved LeJEPA checkpoint received its own separately trained fixed-epoch frozen head.
+- The selection rule minimized the absolute **CIFAR10 test-accuracy** gap over all `20 x 13 = 260` saved-checkpoint combinations.
+- Selected pair: ImageNet FT epoch 1 at `0.9125` versus LeJEPA SSL epoch 110 plus frozen head at `0.8913`; gap `0.0212`.
+- This is much closer than Experiment 1, but it is not exact matching. The test set was reused for repeated checkpoint probes, canonical sweep/configuration choice, and the 260-way pair selection. This makes the result test-adaptive; a future experiment should select on a validation split and reserve test for final evaluation.
+
+### Filter-analysis configuration
+
+- Direct kernel controls compare raw, BN-folded, and max-abs-normalized representations, plus frequency, roughness, orientation, center energy, and spatial energy. This report includes the CIFAR stem, uses 120 bins, and caps large scalar-distribution samples at a deterministic 250,000.
+- The authoritative paper-aligned PCA analysis excludes the stem and contains the 16 residual-block `3x3` tensors: 1,220,608 channel-pair filters/model.
+- Its full 9D PCA is fitted to the union of the two selected models. Drift uses 70 bins, with bounds recomputed separately within each global/stage/layer scope. Stage/layer `D` values are descriptive rankings, not additive components of global `D`.
+
+### Inputs
+
+```text
+data/cifar10/
+scripts/train_rn18_cifar10_experiment.py
+scripts/probe_rn18_cifar10_lejepa_checkpoints.py
+scripts/analyze_rn18_cifar10_kernel_distributions.py
+scripts/analyze_rn18_cifar10_filters.py
+docs/rn18_cifar10_lejepa_protocol.md
+outputs/(3rdEXP)(theONE)rn18_cifar10_true_lejepa_cfg_l02_v4_p64_strong/checkpoints/
+outputs/(3rdEXP)(theONE)rn18_cifar10_true_lejepa_cfg_l02_v4_p64_strong/linear_heads/
+```
+
+### Main outputs
+
+Canonical training directory: `outputs/(3rdEXP)(theONE)rn18_cifar10_true_lejepa_cfg_l02_v4_p64_strong/`
+
+- Training/probe metrics: `imagenet_finetune_metrics.csv`, `lejepa_ssl_metrics.csv`, `lejepa_quick_probe_metrics.csv`, `lejepa_linear_metrics.csv`.
+- Selection/evaluation: `selected_pair.json`, `matched_checkpoints.csv`, `matched_eval_metrics.csv`, `matched_confusion_matrices.csv`.
+- Canonical direct pair report: `analysis_imagenet_epoch001_vs_lejepa_epoch110/`.
+- Authoritative stem-excluded PCA report: `analysis_imagenet_epoch001_vs_lejepa_epoch110/pca_shape_analysis/`.
+- A later external-PCA duplicate is under `analysis_global_cnn_filter_db_basis_epoch001_vs_epoch110/`; that belongs scientifically to Experiment 4's validation.
+
+Do not use the canonical directory's top-level `analysis/` as the final residual-block result: it is a legacy stem-included run (`global D=0.122472`) in which the special stem dominated (`D=9.405763`). Also, `selected_pair.json` retains missing pre-rename ImageNet paths; the canonical `checkpoints/` directory contains LeJEPA checkpoints only. The currently usable ImageNet epoch-1 weight is the regenerated Experiment 4 checkpoint.
+
+### Observed results
+
+Accuracy:
+
+- Best ImageNet FT: `0.9595` at epoch 19.
+- Best canonical LeJEPA fixed-probe final accuracy: `0.8913` at epoch 110.
+- Selected closest-accuracy comparison: `0.9125` versus `0.8913`, absolute gap `0.0212`.
+
+No-stem local-PCA shape result:
+
+| Scope | `D` |
+|---|---:|
+| Global | 0.128806 |
+| layer1 | 0.079488 |
+| layer2 | 0.015189 |
+| layer3 | 0.017935 |
+| layer4 | 0.185562 |
+
+- Largest layer drift: `layer4.1.conv2.weight = 0.779819`.
+- Other large differences clustered in early layer1; middle layer2/layer3 stages were much closer.
+- `c0` contributed `0.101556` of the global weighted symmetric KL and dominated the total.
+- This `c0` contribution is about `78.84%` of the global `0.128806` drift; its weighted TV was `0.059340` and its saved-basis LeJEPA-minus-ImageNet mean shift was `-0.005987`.
+
+PCA-independent direct controls:
+
+- Pooled LeJEPA raw-weight standard deviation was `7.02x` ImageNet's, but after BatchNorm folding the ratio reversed to `0.33x`.
+- Mean absolute BN folding scale: ImageNet `2.815`, LeJEPA `0.205`.
+- Global normalized-shape TV: `0.0531`.
+- LeJEPA versus ImageNet mean high-frequency ratio: `0.707` vs `0.592`.
+- Spatial roughness: `1.564` vs `1.321`.
+- Center-energy ratio: `0.111` vs `0.135`.
+- Largest normalized-shape JS divergence was `layer4.1.conv2` (`0.022666`, TV `0.182700`); the special stem ranked second and is why it is excluded from the paper-aligned PCA conclusion.
+
+### Defensible interpretation
+
+At similar but not equal accuracy, ImageNet transfer and LeJEPA show limited global but strongly depth-structured differences under the saved PCA/descriptor protocols: a dominant final-block separation, a smaller early-block cluster, and relatively close middle stages. There is no calibrated universal threshold for the absolute `D`. Raw magnitude is not trustworthy without BatchNorm folding. At this selected checkpoint, LeJEPA shapes are modestly rougher/higher-frequency with less center energy.
+
+### Limitations
+
+- One seed and one selected checkpoint pair; this cannot establish a method-specific signature.
+- ImageNet initialization saw about 1.2M pretraining images and labels before CIFAR10, while LeJEPA saw only 50k unlabeled CIFAR10 training images. Data budget, label exposure, compute, optimizer, and objective are not equalized.
+- Repeated test-set probe evaluation, sweep/configuration choice, and pair selection create test adaptivity, and accuracy is still 2.12 percentage points apart.
+- The comparison deliberately pairs an early, undertrained ImageNet fine-tuning checkpoint with a late LeJEPA checkpoint; matching accuracy does not match training age or optimization state.
+- Channel permutation prevents semantic kernel-index matching; results are distribution-level.
+- Descriptor and PCA results are descriptive, not causal evidence for accuracy.
+
+---
+
+## Experiment 4: RN18 robustness, global PCA, and LeJEPA dynamics
+
+### Questions
+
+1. Are entropy/sparsity conclusions an artifact of one threshold?
+2. Does Experiment 3's pair-depth pattern survive replacement of the two-model PCA pipeline with the external full-database PCA pipeline?
+3. When during LeJEPA training does the normalized filter population organize, and how does that timing relate descriptively to loss/probe accuracy?
+
+### Prerequisites and recovered baseline
+
+The original ImageNet epoch-1 weight file needed for figure regeneration had been lost during directory cleanup. The supervised 20-epoch run was deterministically replayed with seed 13 and the Method A configuration above. Every epoch's train/test loss, accuracy, and learning rate exactly matched the preserved Experiment 3 CSV. Only regenerated epoch 1 is used in final pair analyses; epochs 2-20 are retained as a replay check/archive.
+
+Canonical replay: `outputs/(4thEXP)rn18_cifar10_filter_dynamics/regenerated_imagenet_baseline/`.
+
+An earlier replay used the wrong batch size 256 and was stopped after epoch 16. Everything under `regenerated_imagenet_baseline_batch256_invalid/` is explicitly invalid and must not be used.
+
+### External full CNN Filter DB PCA
+
+| Item | Value |
+|---|---|
+| Released source | DOI `10.5281/zenodo.6371680` |
+| HDF5 shape/type | `(1,464,797,156, 3, 3)`, float64 |
+| HDF5 size | 105,488,156,386 bytes; external scratch storage, not the Git repository |
+| Fit population | all 1,464,797,156 filters; no subsampling |
+| Preprocessing | row-major `N x 9`; cast raw filter to float16; divide by its float16 max-absolute value; accumulate in float64 |
+| Algorithm | exact merged sufficient statistics for the full `9x9` sample covariance, then `numpy.linalg.eigh`; not randomized/incremental PCA |
+| Chunking | 5,000,000 filters/chunk for memory management |
+| Sign convention | largest-absolute loading in each component is positive |
+| Artifact | `outputs/(4thEXP)rn18_cifar10_filter_dynamics/original_cnn_filter_db_pca/cnn_filter_db_full_pca.npz` |
+| SHA256 | `1706ba1b78db4115763bff5e34e02e21c393c6fb739ad20bedf4f6c30d06b135` |
+
+Explained-variance ratios:
+
+```text
+[0.39815034, 0.18326029, 0.11703953, 0.09852558, 0.06576389,
+ 0.05521558, 0.03007510, 0.02823360, 0.02373609]
+```
+
+Validation passed for full-range coverage, finite values, covariance reconstruction, EVR sum, and orthonormality. One warning must remain visible: the recomputed mean differs from the mean printed in the paper supplement by at most `0.00105830942`, above the original `5e-5` tolerance. The released-data fit was accepted because provenance and numerical consistency checks passed, but it must not be described as bit-identical to an author-supplied PCA artifact.
+
+### Part 1: threshold sensitivity
+
+Configuration:
+
+- Inputs: regenerated ImageNet epoch 1 and canonical LeJEPA epoch 110.
+- Scope: 16 residual-block `3x3` layers; stem excluded; no PCA used.
+- Sparsity epsilons: `0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.10`.
+- Low-entropy cutoffs: `0.30` through `0.90` in steps of `0.10`.
+- Random-like `H/TH` cutoffs: `0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05`.
+- Clean entropy separately removes epsilon-sparse filters and recomputes entropy; baseline `H` itself is fixed.
+- All `160/160` legacy regression checks passed.
+
+Headline results:
+
+| Model | Mean H | Min H | Max H | Mean H/TH | Mean S at e=.01 | Max S at e=.01 |
+|---|---:|---:|---:|---:|---:|---:|
+| ImageNet FT e1 | 0.731123 | 0.209724 | 0.872600 | 0.769668 | 0.007925 | 0.125244 |
+| LeJEPA e110 | 0.804338 | 0.688594 | 0.888862 | 0.846737 | 0.000000 | 0.000000 |
+
+- ImageNet's `layer4.1.conv2` remained low entropy for every cutoff from `0.30` through `0.50`; LeJEPA had no layer below `0.50`.
+- Neither model had any layer above the paper's actual random boundary `H/TH > 1.0`; both were also zero at the older heuristic `0.95` cutoff.
+- For every epsilon through `0.01`, LeJEPA had zero sparse residual filters, while ImageNet retained about 12.5% sparsity in one layer. At epsilon `0.10`, mean sparsity was `0.5044` ImageNet versus `0.0804` LeJEPA, though this is a deliberately broad threshold.
+- Output: `outputs/(4thEXP)rn18_cifar10_filter_dynamics/part1_threshold_sensitivity/`.
+
+### Part 2: selected pair in the external PCA basis
+
+Configuration:
+
+- Same ImageNet epoch-1/LeJEPA epoch-110 pair and accuracies. The PCA branch excludes the stem and uses 1,220,608 filters/model; the PCA-independent scalar kernel controls include the CIFAR stem and use 1,220,800 filters/model.
+- For PCA projection, target preprocessing exactly matches the external artifact's float16-then-max-abs order. This differs slightly from Experiment 3's float32 max-abs PCA preprocessing, so the PCA comparison below changes both basis and projection preprocessing—not the basis alone. PCA-independent raw/BN/descriptor controls retained their Experiment 3-compatible processing path.
+- The PCA basis is fixed externally; 70-bin component bounds are recomputed from the compared groups within each global/stage/layer scope to remain compatible with Experiment 3.
+- PCA-independent raw/BN/shape/descriptor controls were rerun against the regenerated checkpoint.
+
+Results:
+
+| Scope | Local pair PCA (Exp. 3) | Full-database PCA (Exp. 4) |
+|---|---:|---:|
+| Global | 0.128806 | 0.133022 |
+| layer1 | 0.079488 | 0.070725 |
+| layer2 | 0.015189 | 0.011124 |
+| layer3 | 0.017935 | 0.017624 |
+| layer4 | 0.185562 | 0.193849 |
+
+- Under the combined external-basis/preprocessing change, global `D` changed only `+0.004216` or about `+3.27%`.
+- `layer4.1.conv2` remained dominant: `0.779819` local basis versus `0.779966` external basis.
+- The external-basis `c0` contribution was `0.102808`; component numbering beyond broad leading directions should not be mapped naively between bases.
+- All six PCA-independent CSV families were numerically identical to the old Experiment 3 outputs (maximum difference `0.0`), validating the checkpoint replay.
+- Output: `outputs/(4thEXP)rn18_cifar10_filter_dynamics/part2_original_basis_pair/`.
+- The same result/figures were also written under Experiment 3's `analysis_global_cnn_filter_db_basis_epoch001_vs_epoch110/`; this duplicate did not train models or overwrite the old local-PCA result.
+
+### Part 3: LeJEPA training dynamics
+
+Configuration:
+
+- Analysis-only; no ImageNet model is used and no checkpoint is mutated.
+- Exact checkpoints: epochs `1,10,20,30,40,50,60,70,80,90,100,110,120`.
+- Each checkpoint contributes the same 16 residual `3x3` layers and 1,220,608 filters; stem excluded.
+- All are projected into the same full-database PCA. PCA is never refitted by epoch.
+- 70 histogram bins use one component-wise edge set computed from the union of all 13 checkpoints and reused for global/stage/layer comparisons.
+- Milestone distribution figures use epochs `1,30,60,90,120`.
+- Output: `outputs/(4thEXP)rn18_cifar10_filter_dynamics/lejepa_training_dynamics/`.
+
+Global trajectory:
+
+| Epoch | D from epoch 1 | D from previous saved checkpoint | D to epoch 120 |
+|---:|---:|---:|---:|
+| 1 | 0.000000 | 0.000000 | 0.419884 |
+| 10 | 0.172998 | 0.172998 | 0.053262 |
+| 20 | 0.341305 | 0.027179 | 0.005730 |
+| 30 | 0.417520 | 0.003989 | 0.000948 |
+| 50 | 0.442967 | 0.000182 | 0.000560 |
+| 90 | 0.423185 | 0.000102 | 0.000096 |
+| 110 | 0.420222 | 0.000042 | 0.000007 |
+| 120 | 0.419884 | 0.000007 | 0.000000 |
+
+- Most coarse global reorganization occurred in the first 20-30 epochs. Distance from epoch 1 overshot to `0.442967` at epoch 50 and relaxed to `0.419884` at epoch 120.
+- Endpoint stage drift: layer1 `0.529162`, layer2 `0.236437`, layer3 `0.359590`, layer4 `0.466528`. Layer1 continued changing after the global pool appeared stable; layer4 contains 75.17% of all filters and dominates pooling.
+- Largest endpoint layer drift was `layer1.0.conv2 = 1.128378`; `layer4.1.conv2 = 0.776601` was also large.
+- Endpoint component shares: `c0=73.615%`, `c1=11.922%`; together `85.54%`.
+- Mean layer entropy fell from `0.953554` at epoch 1 to `0.824790` at epoch 30 and `0.804359` at epoch 120. Every layer was slightly above the paper random reference at epoch 1; none was above it by epoch 10.
+- Legacy epsilon-0.01 sparsity was exactly zero for every LeJEPA checkpoint/residual layer.
+- Raw mean kernel L2 grew `0.07149 -> 0.39805` (`5.57x`), but BN-folded L2 grew only `0.04543 -> 0.07111` (`1.57x`) as mean absolute BN scale fell `0.65330 -> 0.17622`.
+- High-frequency ratio fell `0.87512 -> 0.70721`; roughness fell `2.59997 -> 1.56371`; orientation anisotropy rose `0.23420 -> 0.35878`; mean center energy stayed near `0.111`.
+- From epoch 30 to 120, distance to the final global histogram was only `0.000948`, but fixed-probe accuracy improved `0.8408 -> 0.8905`. At epoch 110 it peaked among saved final probes at `0.8913` before `0.8905` at epoch 120.
+
+The pair `D=0.133022` and dynamics `D=0.419884` must **not** be compared as a ratio: their histogram edge sets are constructed from different populations.
+
+### Defensible interpretation
+
+The main Experiment 3 depth pattern survives replacement of its local float32 pipeline by the external-basis float16 pipeline, and its sparsity/low-entropy observations are not confined to one arbitrary threshold. This is a robustness check, not a perfectly isolated PCA-basis ablation. During this single LeJEPA run, coarse normalized-filter organization emerged early, while later task-relevant representation improvements continued with little global histogram movement. This suggests that late gains occur in structure finer than the pooled coefficient histogram; it does not prove filter movement is unimportant or causal.
+
+### Limitations
+
+- The pair and dynamics remain single-seed observations.
+- Epoch 1 is after one full epoch, not true random initialization; there is no epoch-0 dynamics checkpoint.
+- Histogram KL remains bin-dependent despite the fixed-edge protocol.
+- The global PCA mean discrepancy is documented and accepted, not resolved.
+- A stable global histogram can hide channel-level, activation-level, and functionally important small parameter changes.
+
+---
+
+## Cross-experiment conclusions supported by the current evidence
+
+1. In RN50/MLL23, ImageNet FT and LeJEPA are much closer to each other than either scratch comparison. The selected RN18/CIFAR10 pair also shows limited but structured differences under its PCA and descriptor protocols, but its unbounded `D` has no calibrated universal “close/far” threshold or random negative-control scale.
+2. Their residual difference is structured by network depth, but the strongest location differs by setting: RN50's largest ImageNet-LeJEPA layer drift is early (`layer1.0.conv2`), whereas RN18 is dominated by the final `layer4.1.conv2` with a secondary early cluster.
+3. The RN18 depth pattern persists under the combined move from local float32 preprocessing/two-model PCA to matching float16 preprocessing/an external PCA fitted on the entire released CNN Filter DB.
+4. Raw Conv weight magnitude is badly confounded by BatchNorm scale; raw, BN-folded, and shape-normalized views must be reported together.
+5. In the canonical LeJEPA run, coarse normalized filter-shape organization occurred mainly in the first 20-30 epochs, earlier than the final plateau in frozen-probe accuracy.
+6. Entropy and sparsity describe filter populations; they are not standalone quality or accuracy scores.
+
+## Claims the current evidence does **not** support
+
+- “LeJEPA universally produces this filter signature.” There is only one seed for the canonical RN18 run and incomplete seed provenance for RN50.
+- “LeJEPA is better than ImageNet transfer.” The experiments were designed for structural comparison, not a fair performance contest; pretraining data, labels, compute, and optimizers differ.
+- “The largest PCA component causes accuracy.” All relationships are observational.
+- “A filter at index k has the same semantic role in two independently trained models.” Channel permutations make indexwise correspondence unsafe.
+- “The global histogram stopped changing, so learning stopped.” Probe accuracy and loss continued changing after the histogram plateau.
+- “The full-database PCA is bit-identical to the paper authors' basis.” It is a validated recomputation from the released data with a documented mean-vector discrepancy.
+
+## Highest-priority design gaps for the next experiment
+
+1. **Independent seeds:** repeat complete training routes, not just filter resampling. Treat seed/model as the unit of inference; filters within one network are correlated.
+2. **Fair data/compute controls:** either equalize pretraining images, epochs/updates, augmentations, and label exposure or use a factorial design that measures each confound.
+3. **Clean checkpoint selection:** select/match checkpoints on a validation split or predeclared epoch; keep the test set untouched until final reporting.
+4. **True initialization baseline:** save epoch 0 plus dense early checkpoints if training dynamics is central.
+5. **Predeclared primary endpoint:** specify whether the main endpoint is global external-basis drift, layer4 drift, entropy, descriptors, accuracy, or another metric. Treat the rest as secondary/exploratory.
+6. **Fixed and sensitivity-tested measurement:** keep the checksum-pinned external PCA and common histogram edges across every condition being compared; add predeclared bin-count sensitivity (for example 50/70/100) and layer-balanced as well as filter-pooled summaries.
+7. **Architecture/scope consistency:** use the same architecture and stem treatment in all arms. State separately when the stem is included.
+8. **Representation controls:** always report raw, BN-folded, and normalized-shape results. Consider activation/functional metrics if the hypothesis is causal rather than purely morphological.
+9. **Uncertainty:** bootstrap/check uncertainty across independently trained models/seeds. Filter-level subsampling can be a secondary numerical-stability check, not the main inferential interval.
+10. **Reproducibility:** save configs, environment, dataset split hashes, checkpoints, PCA checksum/provenance, fixed bin edges, tidy CSVs, and validation checks in a stable non-renamed output directory.
+
+## Canonical source priority
+
+If a future chat can access the repository, use these sources in this order:
+
+1. This handoff and `(3)EXPERIMENT_PROGRESS.md` for project lineage.
+2. `docs/rn18_cifar10_lejepa_protocol.md` for the corrected LeJEPA definition.
+3. Experiment 1: `outputs/(1stEXP)rn50_filter_analysis/report_first_experiments.md` and `summary.md`.
+4. Experiment 2: `outputs/(2ndEXP)rn50_lejepa_imagenet_residuals/summary.md`.
+5. Experiment 3: canonical `summary.md`, `selected_pair.json`, direct pair `summary.md`, and the nested stem-excluded `pca_shape_analysis/summary.md`.
+6. Experiment 4: `summar2eng.md`, then each part's `summary.md`, provenance JSON, and validation CSV.
+7. Scripts and Slurm jobs are authoritative when prose and implementation disagree.
+
+## Prompt scaffold for the next chat
+
+Paste this whole file, then append:
+
+```text
+My new hypothesis:
+[write a falsifiable statement]
+
+My research end goal:
+[paper claim, mechanism test, engineering goal, etc.]
+
+Constraints:
+[GPU/time/storage limits, allowed datasets, deadline, required architecture]
+
+Please propose the next experiment configuration. Explicitly provide:
+1. the hypothesis and null hypothesis;
+2. independent/dependent/control variables and confounds;
+3. an experiment matrix with seeds and ablations;
+4. exact data splits, model/training hyperparameters, checkpoints, and stopping/selection rules;
+5. primary and secondary metrics, PCA/binning protocol, and uncertainty analysis;
+6. expected inputs/outputs and directory layout;
+7. success/failure criteria and what each possible result would mean;
+8. a compute-aware minimal version and a stronger publication-grade version.
+
+Do not reuse the invalid EMA/predictor run as LeJEPA, the fake-data smoke test as evidence,
+or the batch-256 regenerated ImageNet baseline. Do not select checkpoints on the test set.
+```

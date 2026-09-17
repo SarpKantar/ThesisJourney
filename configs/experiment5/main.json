@@ -1,0 +1,130 @@
+{
+  "experiment": "experiment5_sigreg_local_structure",
+  "protocol_version": 1,
+  "dataset": {
+    "name": "CIFAR10",
+    "split_seed": 20260916,
+    "train_size": 45000,
+    "validation_size": 5000,
+    "diagnostic_size": 2048,
+    "calibration_size": 2048,
+    "classes": 10
+  },
+  "model": {
+    "backbone": "torchvision_resnet18_cifar_stem",
+    "projector_dims": [512, 2048, 2048, 64],
+    "projector_hidden_normalization": "BatchNorm1d",
+    "projector_hidden_activation": "GELU",
+    "projector_linear_biases": [false, false, true],
+    "batch_norm": {"eps": 1e-05, "momentum": 0.1, "affine": true, "track_running_stats": true}
+  },
+  "augmentation": {
+    "output_size": 32,
+    "views": 4,
+    "random_resized_crop_scale": [0.08, 1.0],
+    "random_resized_crop_ratio": [0.75, 1.3333333333333333],
+    "interpolation": "bilinear",
+    "antialias": true,
+    "horizontal_flip_probability": 0.5,
+    "color_jitter": [0.8, 0.8, 0.8, 0.2],
+    "color_jitter_probability": 0.8,
+    "grayscale_probability": 0.2,
+    "gaussian_blur_probability": 0.5,
+    "gaussian_blur_kernel": 3,
+    "gaussian_blur_sigma": [0.1, 2.0],
+    "solarize_probability": 0.2,
+    "solarize_threshold": 128,
+    "operation_order": [
+      "RandomResizedCrop",
+      "RandomHorizontalFlip",
+      "RandomApply(ColorJitter)",
+      "RandomGrayscale",
+      "RandomApply(GaussianBlur)",
+      "RandomSolarize",
+      "ToTensor",
+      "Normalize"
+    ]
+  },
+  "training": {
+    "batch_size": 256,
+    "complete_batches_per_epoch": 175,
+    "total_updates": 21000,
+    "equivalent_epochs": 120,
+    "optimizer": "AdamW",
+    "learning_rate": 0.002,
+    "minimum_learning_rate": 0.000002,
+    "warmup_updates": 175,
+    "betas": [0.9, 0.999],
+    "epsilon": 1e-08,
+    "matrix_weight_decay": 0.0005,
+    "bias_and_normalization_weight_decay": 0.0,
+    "precision": "bfloat16",
+    "alignment_coefficient": 0.98,
+    "sigreg_coefficient": 0.02,
+    "vc_coefficient": null,
+    "metrics_every_updates": 25,
+    "checkpoint_updates": [0, 1, 10, 50, 175, 350, 875, 1750, 3500, 5250, 10500, 15750, 21000],
+    "full_diagnostic_updates": [0, 175, 875, 1750, 5250, 10500, 21000]
+  },
+  "sigreg": {
+    "source_repository": "https://github.com/galilai-group/lejepa",
+    "source_commit": "c293d291ca87cd4fddee9d3fffe4e914c7272052",
+    "implementation": "lejepa.EppsPulley+SlicingUnivariateTest",
+    "num_slices": 1024,
+    "integration_bound": 5.0,
+    "integration_points": 17,
+    "integration": "trapezoid",
+    "node_convention": "17 nonnegative nodes on [0,bound] with symmetric weights (the pinned reference implementation's effective full interval is [-bound,bound])",
+    "slice_reduction": "mean",
+    "view_reduction": "mean",
+    "statistics_dtype": "float32",
+    "historical_bound_for_sensitivity": 3.0
+  },
+  "vicreg_comparator": {
+    "variance_target": 1.0,
+    "variance_epsilon": 0.0001,
+    "variance_weight": 25.0,
+    "covariance_weight": 1.0,
+    "covariance_denominator": "B-1",
+    "view_reduction": "mean"
+  },
+  "seeds": {
+    "pilot": [901, 902],
+    "discovery": [13, 17, 23, 31, 43],
+    "confirmation": [101, 103, 107, 109, 113],
+    "stream_names": ["initialization", "data_order", "augmentation", "sigreg_directions", "probe"]
+  },
+  "probe": {
+    "label_fractions": [0.01, 0.1, 1.0],
+    "label_draw_seeds": [20260917, 20260918, 20260919],
+    "primary_label_fraction": 0.1,
+    "epochs": 50,
+    "optimizer": "AdamW",
+    "learning_rate": 0.001,
+    "weight_decay": 0.000001,
+    "batch_size": 256,
+    "schedule": "cosine",
+    "head": "Linear(512,10)",
+    "backbone_mode": "eval"
+  },
+  "representation_diagnostics": {
+    "validation_images": 2048,
+    "augmented_views": 4,
+    "augmentation_seed": 20260922,
+    "lidar_within_covariance_delta": 0.000001,
+    "lidar_entropy_epsilon": 1e-12,
+    "gaussian_test_slices": 4096,
+    "gaussian_test_points": 33,
+    "gaussian_test_bound": 5.0,
+    "gaussian_test_direction_seed": 20260920,
+    "gaussian_simulation_seed": 20260921
+  },
+  "primary_endpoint": {
+    "metric": "equal_layer_mean_normalized_weight_energy_effective_rank",
+    "update": 5250,
+    "contrast": "B-C",
+    "parameter_representation": "raw",
+    "layer_scope": "the 16 residual-block 3x3 convolution matrices (layer1-layer4 conv1/conv2); stem and shortcuts are prespecified secondary diagnostics",
+    "matrix_centering": "uncentered"
+  }
+}

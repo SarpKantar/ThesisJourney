@@ -77,6 +77,29 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Large local datasets and generated research artifacts
+data/
+*.h5
+*.h5.xz
+outputs/
+papers/
+models/*
+
+# The three supplied RN50 checkpoints are experiment inputs, not generated
+# outputs. They are intentionally versioned so Experiments 1-2 can be rerun.
+!models/rn50_rand_ft_backbone.pth
+!models/rn50_imagenet_ft_backbone.pth
+!models/rn50_lejepa_ssl_backbone.pth
+
+# Machine-specific cluster notes (the portable instructions live in README).
+ServerInformation.txt
+
+# Slurm outputs
+logs/*
+!logs/.gitkeep
+slurm-*.out
+slurm-*.err
+
 # IPython
 profile_default/
 ipython_config.py

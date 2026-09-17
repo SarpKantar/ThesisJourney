@@ -1,0 +1,10 @@
+name: cnn-filter-db
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - ipykernel
+  - notebook
+  - pip:
+      - -r requirements.txt
